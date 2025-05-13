@@ -91,18 +91,31 @@ class GPT(nn.Module):
 
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-    def forward(self, idx):
-        B, T = idx.size()
-        assert T <= self.config.block_size
-        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
-        pos_emb = self.transformer.wpe(pos)
-        tok_emb = self.transformer.wte(idx)
+    def forward(self, idx, targets=None):
+        device = idx.device
+        b, t = idx.size()
+        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
+
+        # forward the GPT model itself
+        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = tok_emb + pos_emb
+
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
-        logits = self.lm_head(x)
-        return logits
+
+        if targets is not None:
+            # if we are given some desired targets also calculate the loss
+            logits = self.lm_head(x)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+        else:
+            # inference-time mini-optimization: only forward the lm_head on the very last position
+            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            loss = None
+
+        return logits, loss
         
     @classmethod
     def from_pretrained(cls, model_type):
@@ -163,22 +176,29 @@ elif torch.backends.mps.is_available():
     device = "mps"
 print(f"using device: {device}")
 
-num_return_sequences = 5
-max_length = 30
-
-model = GPT.from_pretrained('gpt2')
-model.eval()
-model.to(device)
-
-# prefix tokens
+# get a data batch
 import tiktoken
-enc = tiktoken.get_encoding("gpt2")
-tokens = enc.encode("Hello, I'm a language model")
-tokens = torch.tensor(tokens, dtype=torch.long)
-tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-x = tokens.to(device)
+enc = tiktoken.get_encoding('gpt2')
+with open('input.txt', 'r') as f:
+    text = f.read()
+text = text[:1000]
+tokens = enc.encode(text)
+B, T = 4, 32
+buf = torch.tensor(tokens[:B*T + 1], device=device)
+x = buf[:-1].view(B, T)
+y = buf[1:].view(B, T)
+
+
+# model = GPT.from_pretrained('gpt2')
+model = GPT(GPTConfig())
+model.to(device)
+logits, loss = model(x, y)
+
+print(loss)
+import sys; sys.exit(0)
 
 # generate
+model.eval()
 torch.manual_seed(42)
 torch.cuda.manual_seed(42)
 while x.size(1) < max_length:
