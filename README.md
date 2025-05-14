@@ -493,6 +493,39 @@ for step in range(50):
 ```
 
 
+### Add optimizer configuration method with weight decay support
+
+给GPT类添加新的方法来更方便地设置Optimizer的参数
+
+```python
+    def configure_optimizers(self, weight_decay, learning_rate, device):
+        # start with all params requiring grad
+        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        # create optim groups. Any parameters that is 2D will be weight decayed, others won't
+        # all weights in matmuls and embeddings will be weight decayed
+        # biases and layernorms won't be weight decayed
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+        optim_groups = [
+            {"params": decay_params, "weight_decay": weight_decay},
+            {"params": nodecay_params, "weight_decay": 0.0},
+        ]
+        num_dcay_params = sum(p.numel() for p in decay_params)
+        num_ndcay_params = sum(p.numel() for p in nodecay_params)
+        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and 'cuda' in device
+        print(f"using fused AdamW: {use_fused}")
+        # fused make it faster
+        optimizer = torch.optim.AdamW(
+            optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused
+        )
+        return optimizer
+
+```
+
+
+
 
 
 ## Section 4
