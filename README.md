@@ -420,6 +420,10 @@ for i in range(50):
 ```
 
 
+### Enable Torch compilation for improved model performance in training
+
+通过加入`torch.compile(model)`可以将当前的运行代码进行编译并做相关的算子融合等优化，进一步加速训练速度
+
 
 
 ## Section 3
