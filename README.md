@@ -432,6 +432,13 @@ for i in range(50):
 y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
 ```
 
+### Specify vocab size to 50304
+
+手动调整vocab_size为50304，可以使得vocab_size不再是50257这个比较ugly的数字，变为2的幂次方的数将会使得gpu更容易优化处理，进而有性能的提升
+```python
+model = GPT(GPTConfig(vocab_size=50304))
+```
+
 
 
 

@@ -241,9 +241,29 @@ model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
 model = torch.compile(model)
 
+max_lr = 6e-4
+min_lr = max_lr * 0.1
+warup_step = 10
+max_step = 50
+
+
+def get_lr(it):
+    # 1) linear warmup for warmup_iters steps
+    if it < warup_step:
+        return max_lr * (it + 1) / warup_step
+    # 2) if it > lr_decay_iters, return min learning rate
+    if it > max_step:
+        return min_lr
+    # 3) in between, use cosine decay down to min learning rate
+    decay_ratio = (it - warup_step) / (max_step - warup_step)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (max_lr - min_lr)
+
+
 # optimize
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-for i in range(50):
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
+for step in range(50):
     t0 = time.time()
     optimizer.zero_grad()
     x, y = train_loader.next_batch()
@@ -251,6 +271,11 @@ for i in range(50):
     with torch.autocast(device_type=device, dtype=torch.bfloat16):
         logits, loss = model(x, y)
     loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    # determine and set the learning rate for this iteration
+    lr = get_lr(step)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
     optimizer.step()
     if device == "cuda":
         torch.cuda.synchronize()
@@ -258,7 +283,8 @@ for i in range(50):
         torch.mps.synchronize()
     t1 = time.time()
     dt = (t1 - t0) * 1000
-    print(f"iter {i}: loss {loss.item():.4f}, dt {dt:.2f}ms, tok/s {x.size(0) * x.size(1) / (dt / 1000):.2f}")
+    print(
+        f"iter {step} | loss {loss.item():.4f} | norm: {norm:.4f} | dt {dt:.2f}ms | tok/s {x.size(0) * x.size(1) / (dt / 1000):.2f}")
 
 import sys;
 
