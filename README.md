@@ -424,6 +424,15 @@ for i in range(50):
 
 通过加入`torch.compile(model)`可以将当前的运行代码进行编译并做相关的算子融合等优化，进一步加速训练速度
 
+### Replace attention mechanism with flash attention for improved efficiency
+
+使用flash attention替代现有的attention计算算法，因为attention不能自动进行算子融合，手动进行算子融合来提升性能。
+
+```python
+y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+```
+
+
 
 
 ## Section 3
