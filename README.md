@@ -386,6 +386,29 @@ def _init_weights(self, module):
 
 ## Section 2
 
+### Try mixed precision matmul and optimize training loop with improved batch size and timing metrics
+
+通过设置`torch.set_float32_matmul_precision('high')`使得在训练的矩阵乘法计算中，可以使用tensor float 32精度来去计算。并且在每个训练的loop中加入了时间和吞吐量的指标，可以看到使用tensor float 32 精度来去计算可以获得3倍的速度提升
+
+```python
+for i in range(50):
+    t0 = time.time()
+    optimizer.zero_grad()
+    x, y = train_loader.next_batch()
+    x, y = x.to(device), y.to(device)
+    logits, loss = model(x, y)
+    loss.backward()
+    optimizer.step()
+    if device == "cuda":
+        torch.cuda.synchronize()
+    elif device == "mps":
+        torch.mps.synchronize()
+    t1 = time.time()
+    dt = (t1 - t0) * 1000
+    print(f"iter {i}: loss {loss.item():.4f}, dt {dt:.2f}ms, tok/s {x.size(0) * x.size(1) / (dt / 1000):.2f}")
+```
+
+
 
 
 ## Section 3
