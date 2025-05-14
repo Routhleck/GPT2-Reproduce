@@ -410,6 +410,17 @@ for i in range(50):
 
 
 
+### Enable bfloat16 precision training for improved performance in the training loop
+
+参考pytorch [Automatic Mixed Precision — PyTorch Tutorials 2.7.0+cu126 documentation](https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html#adding-torch-autocast)，通过加入`torch.autocast` context manager来使得在运行过程中应用bfloat16
+
+```python
+ 		with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        logits, loss = model(x, y)
+```
+
+
+
 
 ## Section 3
 
