@@ -192,9 +192,17 @@ y = buf[1:].view(B, T)
 # model = GPT.from_pretrained('gpt2')
 model = GPT(GPTConfig())
 model.to(device)
-logits, loss = model(x, y)
 
-print(loss)
+# optimize
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for i in range(50):
+    optimizer.zero_grad()
+    logits, loss = model(x, y)
+    loss.backward()
+    optimizer.step()
+    print(f"iter {i}: loss {loss.item():.4f}")
+
+
 import sys; sys.exit(0)
 
 # generate
