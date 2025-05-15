@@ -244,11 +244,11 @@ class DataLoaderLite:
             print(f"found {len(shards)} shards for {spilt} in {data_root}")
 
         # state, init at shard zero
+        self.reset()
+
+    def reset(self):
         self.current_shard = 0
         self.tokens = load_tokens(self.shards[self.current_shard])
-        print(f"loaded {len(self.tokens)} tokens")
-
-        # state
         self.current_position = self.B * self.T * self.process_rank
 
     def next_batch(self):
@@ -310,6 +310,8 @@ if device == "cuda":
 elif device == "mps":
     torch.mps.manual_seed(42)
 
+enc = tiktoken.get_encoding("gpt2")
+
 total_batch_size = 524288 # 2^19, ~0.5M
 B = 64 # micro batch size
 T = 1024 # sequence length
@@ -322,6 +324,8 @@ if master_process:
 
 train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank,
                               num_processes=ddp_world_size, spilt='train')
+val_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank,
+                            num_processes=ddp_world_size, spilt='val')
 
 torch.set_float32_matmul_precision('high')
 
@@ -358,6 +362,55 @@ def get_lr(it):
 optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 for step in range(max_step):
     t0 = time.time()
+
+    # once in a while evaluate our validation loss
+    if step % 100 ==0:
+        model.eval()
+        val_loader.reset()
+        with torch.no_grad():
+            val_loss_accum = 0.0
+            val_loss_steps = 20
+            for _ in range(val_loss_steps):
+                x, y = val_loader.next_batch()
+                x, y = x.to(device), y.to(device)
+                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                    logits, loss = model(x, y)
+                loss = loss / val_loss_steps
+                val_loss_accum += loss.detach()
+        if ddp:
+            dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
+        if master_process:
+            print(f"validation loss: {val_loss_accum.item():.4f}")
+
+    # once in a while generate from the model (except step 0, which is noise)
+    # disabled because torch.compile throws a scary error i can't solve rn
+    # if you disable torch.compile, this code works fine
+    if step > 0 and step % 100 == 0:
+        model.eval()
+        num_return_sequences = 4
+        max_length = 32
+        tokens = enc.encode("Hello, I'm a language model,")
+        tokens = torch.tensor(tokens, dtype=torch.long)
+        tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+        xgen = tokens.to(device)
+        sample_rng = torch.Generator(device=device)
+        sample_rng.manual_seed(42)
+        while xgen.size(1) < max_length:
+            # forward the model to get the logits
+            with torch.no_grad():
+                logits, loss = model(xgen)
+                logits = logits[:, -1, :]
+                probs = F.softmax(logits, dim=-1)
+                topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+                ix = torch.multinomial(topk_probs, 1)
+                xcol = torch.gather(topk_indices, -1, ix)
+                xgen = torch.cat((xgen, xcol), dim=1)
+        # print the generated text
+        for i in range(num_return_sequences):
+            tokens = xgen[i, :max_length].tolist()
+            decoded = enc.decode(tokens)
+            print(f"rank {ddp_rank} sample {i}: {decoded}")
+
     optimizer.zero_grad()
     loss_accum = 0.0
     for micro_step in range(grad_accum_steps):
@@ -392,25 +445,3 @@ for step in range(max_step):
 
 if ddp:
     destroy_process_group()
-
-import sys;
-
-sys.exit(0)
-
-# generate
-model.eval()
-
-while x.size(1) < max_length:
-    with torch.no_grad():
-        logits = model(x)
-        logits = logits[:, -1, :]
-        probs = F.softmax(logits, dim=-1)
-        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-        ix = torch.multinomial(topk_probs, 1)
-        xcol = torch.gather(topk_indices, -1, ix)
-        x = torch.cat((x, xcol), dim=1)
-
-for i in range(num_return_sequences):
-    tokens = x[i, :max_length].tolist()
-    decoded = enc.decode(tokens)
-    print(">", decoded)
