@@ -572,6 +572,46 @@ for step in range(50):
         f"iter {step} | loss {loss_accum.item():.4f} | norm: {norm:.4f} | dt {dt:.2f}ms | tok/s {tokens_per_sec:.2f} | ")
 ```
 
+### Implement distributed data parallelism
+
+可以使用torchrun来进行多设备的数据并行，增加训练速度
+
+```python
+from torch.distributed import init_process_group, destroy_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+
+# set up DDP (distributed data parallel)
+# torchrun command sets the env variables RANK, LOCAL_RANK, and WORLD_SIZE
+ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
+if ddp:
+    # use of DDP atm demands CUDA, we set the device appropriately according to rank
+    assert torch.cuda.is_available(), "need CUDA for DDP"
+    init_process_group(backend='nccl')
+    ddp_rank = int(os.environ['RANK'])
+    ddp_local_rank = int(os.environ['LOCAL_RANK'])
+    ddp_world_size = int(os.environ['WORLD_SIZE'])
+    device = f'cuda:{ddp_local_rank}'
+    torch.cuda.set_device(ddp_local_rank)
+    master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
+else:
+    # vanilla, non-DDP run
+    ddp_rank = 0
+    ddp_local_rank = 0
+    ddp_world_size = 1
+    master_process = True
+
+    # attempt to autodetect the device
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    print(f"using device: {device}")
+```
+
+
+
 
 
 

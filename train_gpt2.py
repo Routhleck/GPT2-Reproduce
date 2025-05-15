@@ -216,21 +216,36 @@ class GPT(nn.Module):
 
 # get a data batch
 import tiktoken
+import numpy as np
+
+def load_tokens(filename):
+    npt = np.load(filename)
+    ptt = torch.tensor(npt, dtype=torch.long)
+    return ptt
 
 
 class DataLoaderLite:
-    def __init__(self, B, T, process_rank, num_processes):
+    def __init__(self, B, T, process_rank, num_processes, spilt):
         self.B = B
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
+        assert spilt in ['train', 'val'], "spilt must be train or val"
 
-        # at init load tokens from disk and store them in memory
-        with open('input.txt', 'r') as f:
-            text = f.read()
-        enc = tiktoken.get_encoding('gpt2')
-        tokens = enc.encode(text)
-        self.tokens = torch.tensor(tokens, dtype=torch.long)
+        # get the shard filenames
+        data_root = os.path.join(os.getcwd(), 'edu_fineweb10B')
+        shards = os.listdir(data_root)
+        shards = [s for s in shards if spilt in s]
+        shards = sorted(shards)
+        shards = [os.path.join(data_root, s) for s in shards]
+        self.shards = shards
+        assert len(shards) > 0, f"no shards found for {spilt} in {data_root}"
+        if master_process:
+            print(f"found {len(shards)} shards for {spilt} in {data_root}")
+
+        # state, init at shard zero
+        self.current_shard = 0
+        self.tokens = load_tokens(self.shards[self.current_shard])
         print(f"loaded {len(self.tokens)} tokens")
 
         # state
@@ -243,8 +258,10 @@ class DataLoaderLite:
         y = (buf[1:].view(B, T))  # targets
         # advance the position in the tensor
         self.current_position += B * T * self.num_processes
-        # if loading the next batch would be out of bounds, reset
+        # if loading the next batch would be out of bounds, advance to next shard
         if self.current_position + (B * T + 1) > len(self.tokens):
+            self.current_shard = (self.current_shard + 1) % len(self.shards)
+            self.tokens = load_tokens(self.shards[self.current_shard])
             self.current_position = self.B * self.T * self.process_rank
         return x, y
 
@@ -304,7 +321,7 @@ if master_process:
 
 
 train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank,
-                              num_processes=ddp_world_size)
+                              num_processes=ddp_world_size, spilt='train')
 
 torch.set_float32_matmul_precision('high')
 
@@ -318,8 +335,8 @@ raw_model = model.module if ddp else model
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
-warup_step = 10
-max_step = 50
+warup_step = 715
+max_step = 19073
 
 
 def get_lr(it):
@@ -339,7 +356,7 @@ def get_lr(it):
 # optimize
 # optimizer = torch.optim.AdamW(model.parameters(), lr=6e-4, betas=(0.9, 0.95), eps=1e-8)
 optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
-for step in range(50):
+for step in range(max_step):
     t0 = time.time()
     optimizer.zero_grad()
     loss_accum = 0.0
