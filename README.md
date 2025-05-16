@@ -705,6 +705,57 @@ with mp.Pool(nprocs) as pool:
 ```
 
 
+### Add validation loss evaluation and text generation during training
 
+使用hellaswag来去做评估并在训练期间进行性能评估和生成一段测试的文本
+```python
+    # once in a while evaluate our validation loss
+    if step % 100 ==0:
+        model.eval()
+        val_loader.reset()
+        with torch.no_grad():
+            val_loss_accum = 0.0
+            val_loss_steps = 20
+            for _ in range(val_loss_steps):
+                x, y = val_loader.next_batch()
+                x, y = x.to(device), y.to(device)
+                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                    logits, loss = model(x, y)
+                loss = loss / val_loss_steps
+                val_loss_accum += loss.detach()
+        if ddp:
+            dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
+        if master_process:
+            print(f"validation loss: {val_loss_accum.item():.4f}")
+
+    # once in a while generate from the model (except step 0, which is noise)
+    # disabled because torch.compile throws a scary error i can't solve rn
+    # if you disable torch.compile, this code works fine
+    if step > 0 and step % 100 == 0:
+        model.eval()
+        num_return_sequences = 4
+        max_length = 32
+        tokens = enc.encode("Hello, I'm a language model,")
+        tokens = torch.tensor(tokens, dtype=torch.long)
+        tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+        xgen = tokens.to(device)
+        sample_rng = torch.Generator(device=device)
+        sample_rng.manual_seed(42)
+        while xgen.size(1) < max_length:
+            # forward the model to get the logits
+            with torch.no_grad():
+                logits, loss = model(xgen)
+                logits = logits[:, -1, :]
+                probs = F.softmax(logits, dim=-1)
+                topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+                ix = torch.multinomial(topk_probs, 1)
+                xcol = torch.gather(topk_indices, -1, ix)
+                xgen = torch.cat((xgen, xcol), dim=1)
+        # print the generated text
+        for i in range(num_return_sequences):
+            tokens = xgen[i, :max_length].tolist()
+            decoded = enc.decode(tokens)
+            print(f"rank {ddp_rank} sample {i}: {decoded}")
+```
 
 ## Section 4
